@@ -1,0 +1,43 @@
+# Installed bundle patch layer.
+# Applied by `dsh plugin --profile <profile> add <this directory or tgz>`,
+# or by the plugin manager's install_bundle with this package name.
+#
+# Bare subpath specifiers resolve through node_modules against the installed
+# package's exports map; relative paths resolve against the PROFILE directory
+# and break bundle installs, so keep the package name here (dev mounting from
+# this directory lives in cordis.yml instead).
+#
+# THE THRESHOLDS BELOW ARE CALIBRATED FOR THIS DEPLOYMENT, not the upstream
+# constants — the code defaults still are the upstream ones. Measurement:
+# offline replay of 8 real sessions / 50 turns (2026-11-04) through
+# scripts/calibration-replay.mjs. In this workload the two cumulative gates
+# saturate early (tool results pass 400 and context 180k tokens inside one
+# ordinary work session), so the upstream 6 / 60000 pinned `high` on 84% of
+# turns. After calibration: low 6% / medium 42% / high 52%, thinking cost -11%,
+# and one extra config change per ~25 turns.
+
+- insert:
+    - id: adaptive-effort-scheduler
+      name: '@local/adaptive-effort-scheduler'
+      config:
+        # --- what decides `high` ---
+        # Tool results accumulated before the ask. Upstream used 6; here that is
+        # a latch that trips by turn 3, so 200 keeps it a late-session signal.
+        heavyToolResults: 200
+        # Estimated context tokens (session log only; see contextFloorTokens).
+        heavyCtxTokens: 250000
+        # Size of the ask. Kept above 8000 because a Harness user message often
+        # carries injected framework text (task-state card, retrieved context)
+        # measured at up to 100% of the block.
+        heavyUserChars: 15000
+        # --- what decides `low`: upstream values, untouched ---
+        trivialUserChars: 160
+        trivialCtxTokens: 4000
+        # --- Harness calibration of the token gate (0 = faithful to upstream) ---
+        contextFloorTokens: 0
+        # --- option 2: KV relief. Uncomment to retire `high` entirely.
+        # Measured: low 6% / medium 94% / high 0%, thinking cost -30%,
+        # 3 writes over 50 turns.
+        # allowedEfforts: [low, medium]
+        respectExplicitSelection: true
+        logDecisions: debug
