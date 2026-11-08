@@ -1,0 +1,6 @@
+{
+  "meta": {
+    "title": "Adaptive reasoning effort",
+    "description": "Pins one reasoning effort per user turn from request-shape signals, keeping the prompt cache warm."
+  }
+}

@@ -151,29 +151,6 @@ node scripts/gate-attribution.mjs [--preset installed|upstream] "<会话目录>/
 node scripts/calibration-replay.mjs --config upstream,past200,past200Plus2 --file-list logs.txt
 ```
 
-## 运行审计（2026-11-10：20 段真实会话 / 88 轮，安装窗内 42 轮）
-
-用 [scripts/session-audit.mjs](./scripts/session-audit.mjs) 把持久化日志与插件决策逐轮对账
-（`--since <ISO>` 只统计安装后的轮），结论：
-
-- 档位分布 **low 14% / medium 55% / high 31%**（标定前同一批是 6/42/52，上游阈值是 6/10/84）；
-  18 次轮首写入，42 轮里只有 **4 次** `request/header reason=change`（= 4 次前缀失效）。
-- **轮内改档 1 次**，且经事件序列证明不是本插件写的（该步内没有 claim、`slot.opened` 已置位；
-  同期工具调用只有 `memory_expand`/`glob`）——来自外部（侧栏 UI 的 `model.select`）。
-- **查出的缺陷（1.6.5 修）**：harness 在创建/恢复会话时会落一条带 effort 的 `model/selection`，
-  旧实现把它当人工接管，于是整段会话静默。20 段里 4 段有这种"首轮之前的 effort"，
-  其中 3 段因此几乎没钉过档（例如一段 12 轮会话全程 medium，而重算 band 有 9 轮是 high）。
-  修法：只有在该会话本进程内 claim 过之后的 effort 写入才算接管（claim 之前的第二条不同值仍算）。
-- 开场批量投递会让 band 随批次内后到的消息变化，于是同一开局批出现两次写入（如 `low`→`medium`）；
-  两次都在首个请求派发之前，没有额外缓存代价，最终值即整批判定值。
-
-复跑（阈值从**已安装 bundle 的 `cordis.patch.yml` 读取**，改了配置不会悄悄量错；`--config-file` 可指别处）：
-
-```
-node scripts/session-audit.mjs --since 2026-11-08T17:20:00+08:00 "<会话目录>\session.v4.jsonl.zstd" ...
-node scripts/session-timeline.mjs "<会话目录>\session.v4.jsonl.zstd"   # 只看生命周期/selection/header
-```
-
 ## 配置
 
 见 [cordis.yml](./cordis.yml) 的逐项注释：
@@ -206,17 +183,12 @@ npm 发布的类型面可能落后于 checkout。`$DSH_TSC` 可显式指定 tsc.
 
 ## 已知行为（已确认，别忘了）
 
-1. **手动选择后永久粘滞；但会话自己的档位写入不算手选**。一旦本插件看到一条"不是自己写的"且带
-   effort 的 `model/selection`，**该会话**的调度立即停用且不再自动恢复——记录按 session 而非 Agent
-   保存，所以对之后重建/恢复出的 Agent 同样生效。直到 DSH 重启、插件重载，或你把
-   `respectExplicitSelection: false` 写进配置。这是刻意照搬上游优先级规则 #1（"显式 reasoning 字段
-   永远赢"），不是 bug。只换模型不带 effort 时不会停用，只会重探新路线的能力。
-   边界（1.6.5 起）：在该会话于本进程内**首次 claim 之前**到达的 effort 写入，视为 harness 自己写的
-   初始/恢复值（创建会话或 resume 时它会落一条 selection），不算接管；重复的同值同样不算；只有随后
-   出现的**不同**值才算人工接管。同理，与 Agent 当前 selection **三值全同**（provider/model/effort）的
-   写入视为 resume 重新施加旧值，不算接管（1.6.6）——真实日志里这类写入就落在轮边界、claim 之后，
-   若把它当接管，每次 resume 都会静默整段会话。此前把它当接管会静默整段会话——实测 20 段真实会话里 4 段带这种
-   "首轮之前的 effort"（见下节）。
+1. **手动选择后永久粘滞**。一旦本插件看到一条"不是自己写的"且带 effort 的 `model/selection`
+   （你在 UI 里选了档位，或换模型时连带选了档位），**该会话**的调度立即停用且不再自动恢复——
+   记录按 session 而非 Agent 保存，所以对之后重建/恢复出的 Agent 同样生效，选择发生在首条
+   消息之前也一样。直到 DSH 重启、插件重载，或你把 `respectExplicitSelection: false` 写进配置。
+   这是刻意照搬上游优先级规则 #1（"显式 reasoning 字段永远赢"），不是 bug。
+   只换模型不带 effort 时不会停用，只会重探新路线的能力。
    一处判别极限：若你恰好手选了**当前钉住的同一档位**，它与插件自己写入的回声无法区分，
    不会被记为接管——到档位随下一轮变化时插件会重新覆盖，届时再选一次即可。
 2. **折叠后下一轮可能降档，代价是一次上游前缀失效**。折叠把历史变小 → 下一轮的 `estCtxTokens`

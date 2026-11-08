@@ -1,0 +1,54 @@
+{
+  "name": "@local/adaptive-effort-scheduler",
+  "description": "Per-turn adaptive reasoning-effort pin for one local route. / 每轮固定一档推理强度（本地路由）。",
+  "version": "1.6.4",
+  "private": true,
+  "type": "module",
+  "main": "dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    },
+    "./effort-bands": {
+      "types": "./dist/effort-bands.d.ts",
+      "default": "./dist/effort-bands.js"
+    },
+    "./auxiliary": {
+      "types": "./dist/auxiliary.d.ts",
+      "default": "./dist/auxiliary.js"
+    },
+    "./locale/*.json": "./locale/*.json",
+    "./icon": "./icon.svg",
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "dist",
+    "cordis.patch.yml",
+    "cordis.yml",
+    "README.md",
+    "LICENSE",
+    "locale/*.json",
+    "icon.svg"
+  ],
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    }
+  },
+  "scripts": {
+    "build": "node scripts/build.mjs tsconfig.build.json",
+    "typecheck": "node scripts/build.mjs tsconfig.typecheck.json",
+    "prepack": "npm run build",
+    "test": "vitest run"
+  },
+  "peerDependencies": {
+    "@deepseek-ai/cordis": "workspace:~",
+    "@deepseek-ai/dsh-agent": "workspace:~"
+  },
+  "engines": {
+    "node": ">=22.19.0"
+  },
+  "license": "MIT"
+}
