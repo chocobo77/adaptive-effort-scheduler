@@ -16,26 +16,44 @@ import { pathToFileURL } from 'node:url'
 const args = process.argv.slice(2)
 const distIndex = args.indexOf('--dist')
 const dist = distIndex >= 0 ? args[distIndex + 1] : 'C:/Users/Administrator/.dsh/profiles/web/node_modules/@local/adaptive-effort-scheduler/dist/effort-bands.js'
-const { resolveBand, clampBand } = await import(pathToFileURL(dist).href)
 // Optional ISO cutoff: ignore turns that happened before the plugin ran, so a
 // corpus of long-lived sessions measures only post-install behavior.
 const sinceArg = args.indexOf('--since')
 const since = sinceArg >= 0 ? Date.parse(args[sinceArg + 1]) : Number.NEGATIVE_INFINITY
+// The config the profile actually runs, read from the installed bundle's patch
+// layer so an audit can never silently measure against the wrong thresholds.
+const patchIndex = args.indexOf('--config-file')
+const patchFile = patchIndex >= 0
+  ? args[patchIndex + 1]
+  : 'C:/Users/Administrator/.dsh/profiles/web/node_modules/@local/adaptive-effort-scheduler/cordis.patch.yml'
 const skip = new Set()
-if (distIndex >= 0) skip.add(distIndex).add(distIndex + 1)
-if (sinceArg >= 0) skip.add(sinceArg).add(sinceArg + 1)
-const files = args.filter((_, index) => !skip.has(index))
-
-// The config the profile actually runs (cordis.patch.yml of the installed bundle).
-const CONFIG = {
-  trivialUserChars: 160,
-  trivialCtxTokens: 4000,
-  heavyCtxTokens: 250_000,
-  heavyToolResults: 200,
-  heavyUserChars: 15_000,
+for (const flagIndex of [distIndex, sinceArg, patchIndex]) {
+  if (flagIndex >= 0) skip.add(flagIndex).add(flagIndex + 1)
 }
-// Route levels the deployment accepts; uncomment to mirror an allowedEfforts ceiling.
-const ALLOWED = undefined
+const files = args.filter((_, index) => !skip.has(index))
+const { DEFAULT_THRESHOLDS, resolveBand, clampBand } = await import(pathToFileURL(dist).href)
+
+/** Read the scalar threshold keys (and an `allowedEfforts` list) out of a patch file. */
+function readPatchConfig(path) {
+  const config = { ...DEFAULT_THRESHOLDS, allowedEfforts: undefined, contextFloorTokens: 0 }
+  let text = ''
+  try { text = fs.readFileSync(path, 'utf8') } catch { return config }
+  for (const key of ['trivialUserChars', 'trivialCtxTokens', 'heavyCtxTokens', 'heavyToolResults', 'heavyUserChars', 'contextFloorTokens']) {
+    const match = new RegExp(`^\\s*${key}:\\s*([0-9]+)\\s*$`, 'm').exec(text)
+    if (match !== null) config[key] = Number(match[1])
+  }
+  const allowed = /^\s*allowedEfforts:\s*\[([^\]]*)\]\s*$/m.exec(text)
+  if (allowed !== null) {
+    config.allowedEfforts = allowed[1].split(',').map(value => value.trim()).filter(Boolean)
+  }
+  return config
+}
+
+const CONFIG = readPatchConfig(patchFile)
+// An `allowedEfforts` ceiling in the patch is mirrored by the clamp in audit().
+const ALLOWED = CONFIG.allowedEfforts
+console.log(`config read from ${patchFile}`)
+console.log(`  thresholds: ${JSON.stringify(CONFIG, (_, value) => Array.isArray(value) ? value.join('/') : value)}\n`)
 
 const textOf = content => typeof content === 'string'
   ? content
@@ -81,7 +99,7 @@ function audit(file) {
   for (const turn of turns) {
     const opening = turn.messages.find(message => message.role === 'user')
     const window = opening === undefined ? [...prefix] : [...prefix, opening]
-    const band = resolveBand(window, CONFIG)
+    const band = resolveBand(window, CONFIG, { tokens: CONFIG.contextFloorTokens ?? 0 })
     turn.band = ALLOWED === undefined ? band : clampBand(band, ALLOWED) ?? band
     turn.userChars = opening === undefined ? 0 : textOf(opening.content).length
     turn.toolResultsBefore = prefix.filter(message => message.role === 'tool').length

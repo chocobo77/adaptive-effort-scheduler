@@ -279,6 +279,32 @@ describe('per-turn pin', () => {
     expect(harness.written).toEqual(['low'])
   })
 
+  it('keeps scheduling when a resume re-asserts the current selection', async () => {
+    // Resumes re-apply the Session's stored selection after the first claim, at a
+    // turn boundary. Identical value means nothing was chosen by hand, so the
+    // scheduler must keep working rather than fall silent for the whole Session.
+    const harness = createHarness(['low', 'medium', 'high'])
+    apply(cast(harness).ctx)
+    cast(harness).ctx.fire('agent/created', { agent: cast(harness).agent })
+    await harness.settle()
+    cast(harness).ctx.fire('agent/inbox/claimed', {
+      agent: cast(harness).agent, turn: 1, message: { role: 'user', content: 'hi there' },
+    })
+    expect(harness.written).toEqual(['low'])
+
+    harness.setHeader({ provider: 'strata', model: 'qwen3.8-flash-next', reasoningEffort: 'medium' })
+    harness.setCurrent({ provider: 'strata', model: 'qwen3.8-flash-next', reasoningEffort: 'medium' })
+    cast(harness).ctx.fire('session/event', harness.agent.session, {
+      type: 'model/selection',
+      data: { provider: 'strata', model: 'qwen3.8-flash-next', reasoningEffort: 'medium' },
+    })
+    harness.setHistory(msgMany(12))
+    cast(harness).ctx.fire('agent/inbox/claimed', {
+      agent: cast(harness).agent, turn: 2, message: { role: 'user', content: 'and now?' },
+    })
+    expect(harness.written).toEqual(['low', 'high'])
+  })
+
   it('keeps scheduling when the pre-claim selection is the Sessions own value', async () => {
     // The Harness writes the Session's initial (created) or restored (resumed)
     // selection before anyone prompts. Measured on real sessions, treating that
