@@ -444,6 +444,19 @@ export function apply(ctx: Context, config?: SchedulerConfig): void {
         return
       }
     }
+    // A selection identical to what the Agent already carries is a re-assertion
+    // (a resume or an options replay re-applying the Session's stored choice) —
+    // the observed seams put those right at turn boundaries, after a claim. A
+    // hand-over changes the value, so only a change counts; honoring an
+    // unchanged one would silence the Session on every resume.
+    for (const agent of slots.keys()) {
+      if (agent.session !== session) continue
+      const now = agent.model.current()
+      if (now === undefined) continue
+      if ((provider ?? now.provider) !== now.provider) continue
+      if ((model ?? now.model) !== now.model) continue
+      if ((now.reasoningEffort ?? undefined) === chosen) return
+    }
     rememberBounded(explicitSessions, sessionId, true)
     for (const [agent, slot] of slots) {
       if (agent.session !== session || slot.disabled) continue

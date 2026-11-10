@@ -167,7 +167,7 @@ node scripts/calibration-replay.mjs --config upstream,past200,past200Plus2 --fil
 - 开场批量投递会让 band 随批次内后到的消息变化，于是同一开局批出现两次写入（如 `low`→`medium`）；
   两次都在首个请求派发之前，没有额外缓存代价，最终值即整批判定值。
 
-复跑：
+复跑（阈值从**已安装 bundle 的 `cordis.patch.yml` 读取**，改了配置不会悄悄量错；`--config-file` 可指别处）：
 
 ```
 node scripts/session-audit.mjs --since 2026-11-08T17:20:00+08:00 "<会话目录>\session.v4.jsonl.zstd" ...
@@ -213,7 +213,9 @@ npm 发布的类型面可能落后于 checkout。`$DSH_TSC` 可显式指定 tsc.
    永远赢"），不是 bug。只换模型不带 effort 时不会停用，只会重探新路线的能力。
    边界（1.6.5 起）：在该会话于本进程内**首次 claim 之前**到达的 effort 写入，视为 harness 自己写的
    初始/恢复值（创建会话或 resume 时它会落一条 selection），不算接管；重复的同值同样不算；只有随后
-   出现的**不同**值才算人工接管。此前把它当接管会静默整段会话——实测 20 段真实会话里 4 段带这种
+   出现的**不同**值才算人工接管。同理，与 Agent 当前 selection **三值全同**（provider/model/effort）的
+   写入视为 resume 重新施加旧值，不算接管（1.6.6）——真实日志里这类写入就落在轮边界、claim 之后，
+   若把它当接管，每次 resume 都会静默整段会话。此前把它当接管会静默整段会话——实测 20 段真实会话里 4 段带这种
    "首轮之前的 effort"（见下节）。
    一处判别极限：若你恰好手选了**当前钉住的同一档位**，它与插件自己写入的回声无法区分，
    不会被记为接管——到档位随下一轮变化时插件会重新覆盖，届时再选一次即可。
