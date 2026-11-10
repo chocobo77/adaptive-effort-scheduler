@@ -177,10 +177,21 @@ export function apply(ctx: Context, config?: SchedulerConfig): void {
   const slots = new Map<Agent, PinSlot>()
   /**
    * Sessions where the user picked the effort by hand. Keyed by session, not
-   * Agent, so the choice also covers Agents created after it (rebuild, resume)
-   * and choices made before the first claim, when no slot exists yet.
+   * Agent, so the choice also covers Agents created after it (rebuild, resume).
+   * Only a selection that arrives after this Session claimed its first prompt in
+   * this process counts — see `claimedSessions`.
    */
   const explicitSessions = new Map<string, true>()
+  /**
+   * Sessions that have claimed a prompt in this process. Before that point a
+   * `model/selection` carrying an effort is the Harness writing the Session's
+   * initial (created) or restored (resumed) selection, not a hand-over: measured
+   * on 20 real sessions, 4 of them carried such a pre-claim effort, and treating
+   * it as an explicit choice silenced the scheduler for the whole Session.
+   */
+  const claimedSessions = new Map<string, true>()
+  /** The pre-claim selection first seen per session, to spot a later differing one. */
+  const preClaimSelections = new Map<string, string>()
   /** While set, a `model/selection` carrying this effort is our own write's echo. */
   let selfEcho: string | undefined
 
@@ -223,14 +234,14 @@ export function apply(ctx: Context, config?: SchedulerConfig): void {
     )
   }
 
-  /** Record a session as user-controlled, bounded like the pin registry. */
-  function rememberExplicitSession(sessionId: string): void {
-    explicitSessions.delete(sessionId)
-    explicitSessions.set(sessionId, true)
-    while (explicitSessions.size > EXPLICIT_SESSION_LIMIT) {
-      const oldest = explicitSessions.keys().next()
+  /** Record a key in a bounded store (insertion order is recency), keeping memory flat. */
+  function rememberBounded<V>(store: Map<string, V>, key: string, value: V): void {
+    store.delete(key)
+    store.set(key, value)
+    while (store.size > EXPLICIT_SESSION_LIMIT) {
+      const oldest = store.keys().next()
       if (oldest.done === true) break
-      explicitSessions.delete(oldest.value)
+      store.delete(oldest.value)
     }
   }
 
@@ -272,6 +283,10 @@ export function apply(ctx: Context, config?: SchedulerConfig): void {
   // or `agent/pre-step`.
   ctx.on('agent/inbox/claimed', ({ agent, message, turn }) => {
     if (!canReadCapabilities) return
+    // From the first claim on, this Session is live in this process: an effort
+    // bearing `model/selection` arriving later is a human act, not the Harness
+    // writing the Session's own initial/restored selection.
+    rememberBounded(claimedSessions, String(agent.session.id), true)
     // A session where the user took over the effort is left alone for good,
     // whatever Agent currently drives it.
     if (explicitSessions.has(String(agent.session.id))) return
@@ -379,8 +394,9 @@ export function apply(ctx: Context, config?: SchedulerConfig): void {
   //    chose, and on a resumed Session it is available long before the first
   //    claim — that is what lets a restored session pin on its first turn.
   //  - `model/selection` written by a human outranks the scheduler — recorded
-  //    per session, so it holds for Agents built later over the same session
-  //    and for choices made before the first claim.
+  //    per session, so it holds for Agents built later over the same session.
+  //    A selection that arrives before the Session's first claim in this process
+  //    is the Harness's own initial/restored value and does not count.
   ctx.on('session/event', (session, event) => {
     if (event.type === 'request/header') {
       const config = event.data?.header?.config
@@ -411,13 +427,30 @@ export function apply(ctx: Context, config?: SchedulerConfig): void {
     for (const [agent, slot] of slots) {
       if (agent.session === session && slot.pinned === chosen) return
     }
-    rememberExplicitSession(String(session.id))
+    const sessionId = String(session.id)
+    const provider = typeof event.data?.provider === 'string' ? event.data.provider : undefined
+    const model = typeof event.data?.model === 'string' ? event.data.model : undefined
+    if (provider !== undefined && model !== undefined) primeRoute(provider, model)
+    if (!claimedSessions.has(sessionId)) {
+      // Before this Session claims anything in this process, an effort-bearing
+      // selection is the Harness writing its initial (created) or restored
+      // (resumed) selection. Treat that — and a repeat of it — as inherited; only
+      // a *different* pre-claim selection means a human reached for the control.
+      const seen = `${provider ?? '?'}/${model ?? '?'}=${chosen}`
+      const baseline = preClaimSelections.get(sessionId)
+      if (baseline === undefined || baseline === seen) {
+        rememberBounded(preClaimSelections, sessionId, seen)
+        logDecision(`adaptive-effort: "${chosen}" on session ${sessionId} predates its first claim; kept as the Session's own selection, not a hand-over`)
+        return
+      }
+    }
+    rememberBounded(explicitSessions, sessionId, true)
     for (const [agent, slot] of slots) {
       if (agent.session !== session || slot.disabled) continue
       slot.disabled = true
-      const published = policy.publishPins ? pinRegistry().get(String(session.id)) : undefined
+      const published = policy.publishPins ? pinRegistry().get(sessionId) : undefined
       if (published !== undefined && published.effort === slot.pinned) published.overridden = true
     }
-    logDecision(`adaptive-effort: explicit effort "${chosen}" wins; scheduler idle for session ${String(session.id)}`)
+    logDecision(`adaptive-effort: explicit effort "${chosen}" wins; scheduler idle for session ${sessionId}`)
   })
 }
