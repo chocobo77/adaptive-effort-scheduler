@@ -39,5 +39,7 @@
         # Measured: low 6% / medium 94% / high 0%, thinking cost -30%,
         # 3 writes over 50 turns.
         # allowedEfforts: [low, medium]
+        # A hand-picked effort wins for the whole Session; the Harness's own
+        # initial/restored selection (written before the first claim) does not.
         respectExplicitSelection: true
         logDecisions: debug

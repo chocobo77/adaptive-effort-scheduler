@@ -36,7 +36,9 @@
     # heavy gate at 250000 the floor no longer decides anything on its own, so
     # it stays at 0 until a re-measurement says otherwise.
     contextFloorTokens: 0
-    # An effort the user picked by hand wins: stop scheduling that Agent.
+    # An effort the user picked by hand wins: the Session is left alone. A
+    # selection arriving before the Session's first claim in this process is the
+    # Harness writing its own initial/restored value and does not count.
     respectExplicitSelection: true
     # Publish each pin to a process-wide registry (Symbol.for key) so plugins
     # that mirror the session effort into auxiliary calls (fold summary, session

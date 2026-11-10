@@ -279,9 +279,10 @@ describe('per-turn pin', () => {
     expect(harness.written).toEqual(['low'])
   })
 
-  it('yields to an explicit effort picked before the first claim', async () => {
-    // No slot exists yet when the user pre-selects in the UI — the choice must
-    // still beat the scheduler on the session's very first turn.
+  it('keeps scheduling when the pre-claim selection is the Sessions own value', async () => {
+    // The Harness writes the Session's initial (created) or restored (resumed)
+    // selection before anyone prompts. Measured on real sessions, treating that
+    // write as a hand-over silenced the scheduler for the whole Session.
     const harness = createHarness(['low', 'medium', 'high'])
     apply(cast(harness).ctx)
     cast(harness).ctx.fire('session/event', harness.agent.session, {
@@ -290,6 +291,32 @@ describe('per-turn pin', () => {
     })
     cast(harness).ctx.fire('agent/created', { agent: cast(harness).agent })
     await harness.settle()
+    // A repeat of the same selection (a resume re-applying it) stays inherited.
+    cast(harness).ctx.fire('session/event', harness.agent.session, {
+      type: 'model/selection',
+      data: { provider: 'strata', model: 'qwen3.8-flash-next', reasoningEffort: 'high' },
+    })
+    cast(harness).ctx.fire('agent/inbox/claimed', {
+      agent: cast(harness).agent, turn: 1, message: { role: 'user', content: 'hi there' },
+    })
+    expect(harness.written).toEqual(['low'])
+  })
+
+  it('yields when a different selection arrives before the first claim', async () => {
+    // No claim yet, but a second, different selection is a hand reaching for the
+    // control rather than the Harness restoring its own value.
+    const harness = createHarness(['low', 'medium', 'high'])
+    apply(cast(harness).ctx)
+    cast(harness).ctx.fire('session/event', harness.agent.session, {
+      type: 'model/selection',
+      data: { provider: 'strata', model: 'qwen3.8-flash-next', reasoningEffort: 'high' },
+    })
+    cast(harness).ctx.fire('agent/created', { agent: cast(harness).agent })
+    await harness.settle()
+    cast(harness).ctx.fire('session/event', harness.agent.session, {
+      type: 'model/selection',
+      data: { provider: 'strata', model: 'qwen3.8-flash-next', reasoningEffort: 'medium' },
+    })
     cast(harness).ctx.fire('agent/inbox/claimed', {
       agent: cast(harness).agent, turn: 1, message: { role: 'user', content: 'hi there' },
     })
