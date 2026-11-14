@@ -123,7 +123,7 @@ agent/pre-step(turn N, step 1)       ◀── 封口：slot.opened = true
    与活跃 pin 相等的 selection 也视为回声。（代价：用户恰好手选了当前钉住档位时无法区分，不算接管。）
 2. **会话自己的初始/恢复选择不算**（1.6.5）：会话在**本进程内首次 claim 之前**到达的带 effort
    selection 是 Harness 写的初始（创建）或恢复（resume）值——首见值记为基线，重复同值仍是继承，
-   只有 claim 前出现**不同**值才算人工。实测 20 段会话里 4 段带这种"首轮之前的 effort"，
+   只有 claim 前出现**不同**值才算人工。
    旧实现把它们当接管导致整段会话静默。
 3. **与当前 selection 三值全同的写入不算**（1.6.6）：resume / options replay 会重新施加会话
    存储的选择，这类写入落在轮边界、claim 之后；只有**值发生变化**才算接管，否则每次 resume 都会静默整段会话。
@@ -182,5 +182,5 @@ if (!isAuxiliaryRequest(options) || pin === undefined || pin.overridden === true
 - 折叠后下一轮可能降档（历史变小 → `estCtxTokens` 回落），代价是一次上游前缀失效；轮内绝不变。
 - 中文口径：`estimateTokens` 的"4 字符 ≈ 1 token"对中文低估 2–3 倍，而 `userChars` 对中文偏高——
   两个门偏差方向相反，本部署阈值按真实中文会话标定，重标时混入英文会漂移。
-- DSH 的 user 消息常被框架注入污染（任务状态卡/检索上下文，实测最高占 98–100%），
+- DSH 的 user 消息常含框架注入文本（任务状态卡/检索上下文），
   `heavyUserChars` 因此从上游 4000 抬到 15000。

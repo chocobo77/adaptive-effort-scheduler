@@ -17,7 +17,7 @@ adaptive-effort-scheduler/
 │   ├── build.mjs               # 免安装依赖的构建/类型检查入口
 │   ├── calibration-replay.mjs  # 离线回放会话日志 → 档位分布/切换/成本
 │   ├── gate-attribution.mjs    # 逐轮归因：哪个 heavy 门触发 + 注入占比
-│   ├── session-audit.mjs       # 运行审计：持久化日志 vs 插件决策逐轮对账
+│   ├── session-audit.mjs       # 逐轮对账：持久化日志 vs 插件决策
 │   └── session-timeline.mjs    # 生命周期/selection/header 时间线转储
 ├── cordis.yml                  # 开发挂载形态（指向 ./dist/index.js，带标定配置）
 ├── cordis.patch.yml            # 安装 bundle 补丁层（带标定配置，随包分发）

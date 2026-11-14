@@ -32,7 +32,7 @@ Harness 的会话日志把这两样放在消息列表之外，所以同一阈值
 
 另一处要注意的是**语言**：`estimateTokens` 沿用上游的「4 字符 ≈ 1 token」，这对英文成立，
 对中文会低估约 2–3 倍（中文约 1.5–2 字/token），而 `userChars`（字符数）对中文反而偏高——
-两个门的偏差方向相反。本部署的阈值是按真实中文会话实测标定的，偏差已被吸收；但若重标时
+两个门的偏差方向相反。本部署的阈值按本部署的真实会话标定，偏差已被吸收；但若重标时
 混入英文会话，两个门的行为会漂移，`heavyUserChars` 与 `heavyCtxTokens` 要分开看。
 
 ## 单轮固定（per-turn pin）
@@ -105,74 +105,31 @@ if (!isAuxiliaryRequest(options) || pin === undefined || pin.overridden === true
 或 `AgentOptions` 指定），那条链仍会复制会话档位，而我的钳制只按**对话路线**的能力。此时用
 `allowedEfforts: [low, medium]` 把钉档限制在所有路线共同的集合里，跨路线能力错配就不可能发生。
 
-## 标定记录（2026-11-04：8 段真实会话 / 50 轮离线回放）
+## 阈值标定
 
-代码里的默认值仍是上游原值；**安装配置里用的是按本部署标定过的值**。用
-[scripts/calibration-replay.mjs](./scripts/calibration-replay.mjs) 按插件 claim 时刻的同一口径
-（历史 + 该轮开场 user 消息）重放持久化会话日志，统计档位分布、**切换次数**（每次切换 = 上游一次
-前缀失效）与思考成本（low=1 / medium=2 / high=3）：
+代码里的默认值就是上游常量；**安装配置用的是按本部署标定过的值**。差异来自宿主形态，不是算法：
 
-| 配置 | low | medium | high | 切换 | 成本 |
-|---|---|---|---|---|---|
-| 上游原值（`6 / 60000 / 4000`） | 6% | 10% | **84%** | 5 | 139 |
-| 只抬 tool/context（40 / 150k） | 6% | 14% | 80% | 8 | 137 |
-| **tool 200 / ctx 250k / ask 15k ← 当前安装值** | 6% | **42%** | 52% | 6 | 123 |
-| 同上 + `allowedEfforts: [low, medium]`（选项 2） | 6% | 94% | 0% | 3 | **97** |
+- `toolResults` 与 `estCtxTokens` 都是**累计**信号。长时间的工具型会话里两者一路上涨，上游的
+  `6` / `60000` 于是成了单向闩锁：早期就锁死 `high`，折叠也不会让它回落。安装配置把这两道门抬到
+  只在会话后半程才可能触发（`heavyToolResults: 200` / `heavyCtxTokens: 250000`）。
+- `userChars` 会被注入文本抬高：任务状态卡、检索上下文可能占满整条 user 消息，真实追问只剩几个字符。
+  上游的 `4000` 因此会把长会话里的短追问判成 heavy，抬到 `15000` 后只抓真正的整段粘贴。
+- `contextFloorTokens` 保持 `0`（上游口径）。上游把整个请求体计入 token，而 Harness 的会话日志只存
+  消息列表——系统提示与工具 schema 不在其中，所以这里的估算系统性偏小，换宿主时需要重新标定这个偏移。
 
-归因（[scripts/gate-attribution.mjs](./scripts/gate-attribution.mjs)）解释为什么必须这样抬：
-
-- 工具结果是**累计**计数，一段正常工作会话能到 400+，`heavyToolResults: 6` 在第 2–3 轮就永久锁死 `high`；
-- 上下文 token 同样累计，正常会话内越过 180k，`60000` 也是单向闩锁；
-- `userChars` 在 DSH 里被注入文本污染：实测某些轮的"用户消息"有 **98–100%** 是框架注入（任务状态卡、
-  检索上下文），真实追问只有 2 字符——`4000` 会把长会话里的短问题误判为 heavy，抬到 `15000` 才只抓大段粘贴。
-
-**复检记录（2026-11-08：Linux 侧 16 段真实会话 / 48 有效轮，5 段为空会话）**。安装配置不变，结论：**无需重标**。
-
-| 配置 | low | medium | high | 切换 | 成本 |
-|---|---|---|---|---|---|
-| 上游原值 | 23% | 8% | **69%** | 5 | 118 |
-| 当前安装值（past200） | 23% | 50% | 27% | 5 | 98 |
-| 加 `allowedEfforts: [low, medium]` | 23% | 77% | 0% | 4 | 85 |
-
-- 上游原值仍在此部署形成 `high` 单相闩锁（69%），当前安装值分布健康：`high` 全部由 `tools`（累计 200+）
-  或 `ctx`（250k+）在真实长会话的后半程触发，属预期 heavy。
-- **`userChars` 门 48 轮中单独触发 `high` 的次数为 0**：≥8k 字符的轮次注入率 94–98%，且 tools/ctx
-  门同轮已触发——该门在本负载下只作冗余确认，无误判也无独有贡献；暂不动它，等它单独触发时再议。
-- 真实日志形状核对：user/assistant/tool 的 `content` 均为块数组，`reasoning` 块如预期被估算忽略，
-  最大会话 2091 条消息，每 claim O(n) 无压力。
-- 活体证据：安装后的会话日志出现「先无 effort 的路由选择 → 同路由带 effort 的选择」序列，
-  与插件的 claim 写入模式一致，调度在 Linux 侧实际生效。
-- `gate-attribution.mjs` 新增 `--preset installed|upstream`，归因可按已装阈值重放。
-
-重测（脚本是开发工具，不参与打包）：
+换部署时先量再定：`scripts/calibration-replay.mjs` 按插件 claim 时刻的同一口径离线重放会话日志，
+输出档位分布、**切换次数**（每次切换 = 上游一次前缀失效）与思考成本（low=1 / medium=2 / high=3）；
+`scripts/gate-attribution.mjs` 逐轮给出三道 heavy 门各自的原始值与触发情况。
 
 ```
 node scripts/gate-attribution.mjs [--preset installed|upstream] "<会话目录>/session.v4.jsonl.zstd" ...
 node scripts/calibration-replay.mjs --config upstream,past200,past200Plus2 --file-list logs.txt
 ```
 
-## 运行审计（2026-11-10：20 段真实会话 / 88 轮，安装窗内 42 轮）
-
-用 [scripts/session-audit.mjs](./scripts/session-audit.mjs) 把持久化日志与插件决策逐轮对账
-（`--since <ISO>` 只统计安装后的轮），结论：
-
-- 档位分布 **low 14% / medium 55% / high 31%**（标定前同一批是 6/42/52，上游阈值是 6/10/84）；
-  18 次轮首写入，42 轮里只有 **4 次** `request/header reason=change`（= 4 次前缀失效）。
-- **轮内改档 1 次**，且经事件序列证明不是本插件写的（该步内没有 claim、`slot.opened` 已置位；
-  同期工具调用只有 `memory_expand`/`glob`）——来自外部（侧栏 UI 的 `model.select`）。
-- **查出的缺陷（1.6.5 修）**：harness 在创建/恢复会话时会落一条带 effort 的 `model/selection`，
-  旧实现把它当人工接管，于是整段会话静默。20 段里 4 段有这种"首轮之前的 effort"，
-  其中 3 段因此几乎没钉过档（例如一段 12 轮会话全程 medium，而重算 band 有 9 轮是 high）。
-  修法：只有在该会话本进程内 claim 过之后的 effort 写入才算接管（claim 之前的第二条不同值仍算）。
-- 开场批量投递会让 band 随批次内后到的消息变化，于是同一开局批出现两次写入（如 `low`→`medium`）；
-  两次都在首个请求派发之前，没有额外缓存代价，最终值即整批判定值。
-
-复跑（阈值从**已安装 bundle 的 `cordis.patch.yml` 读取**，改了配置不会悄悄量错；`--config-file` 可指别处）：
-
-```
-node scripts/session-audit.mjs --since 2026-11-08T17:20:00+08:00 "<会话目录>\session.v4.jsonl.zstd" ...
-node scripts/session-timeline.mjs "<会话目录>\session.v4.jsonl.zstd"   # 只看生命周期/selection/header
-```
+装上之后想核对实际行为，用 `scripts/session-audit.mjs`（阈值直接读已安装 bundle 的
+`cordis.patch.yml`，配置改了不会量错）与 `scripts/session-timeline.mjs`：前者把持久化日志与插件决策
+逐轮对账，后者只列生命周期 / `model/selection` / `request/header` 三类事件。要看每轮的钉档行，
+把 `logDecisions: info` 写进配置。
 
 ## 配置
 
@@ -214,9 +171,8 @@ npm 发布的类型面可能落后于 checkout。`$DSH_TSC` 可显式指定 tsc.
    边界（1.6.5 起）：在该会话于本进程内**首次 claim 之前**到达的 effort 写入，视为 harness 自己写的
    初始/恢复值（创建会话或 resume 时它会落一条 selection），不算接管；重复的同值同样不算；只有随后
    出现的**不同**值才算人工接管。同理，与 Agent 当前 selection **三值全同**（provider/model/effort）的
-   写入视为 resume 重新施加旧值，不算接管（1.6.6）——真实日志里这类写入就落在轮边界、claim 之后，
-   若把它当接管，每次 resume 都会静默整段会话。此前把它当接管会静默整段会话——实测 20 段真实会话里 4 段带这种
-   "首轮之前的 effort"（见下节）。
+   写入视为 resume 重新施加旧值，不算接管（1.6.6）——这类写入落在轮边界、claim 之后，把它当接管会让
+   每次 resume 都静默整段会话。
    一处判别极限：若你恰好手选了**当前钉住的同一档位**，它与插件自己写入的回声无法区分，
    不会被记为接管——到档位随下一轮变化时插件会重新覆盖，届时再选一次即可。
 2. **折叠后下一轮可能降档，代价是一次上游前缀失效**。折叠把历史变小 → 下一轮的 `estCtxTokens`
@@ -240,12 +196,11 @@ npm 发布的类型面可能落后于 checkout。`$DSH_TSC` 可显式指定 tsc.
   存活 Agent dispose 时才清除。
 - 与上下文治理类插件共存时，其摘要/折叠调用会沿用会话当前生效档位——钉到 `low` 时摘要也变便宜；
   跨模型路线做摘要时打开 `allowedEfforts` 消除风险。
-- **标定状态（2026-11-04 后）**：`heavyCtxTokens` / `heavyToolResults` / `heavyUserChars` 已按
-  本部署 8 段会话 / 50 轮重标（见上文标定记录）；`contextFloorTokens: 0` 仍保持上游口径——
-  当前 250k 的 heavy 门下它不起决定作用，等跨语言或更长上下文的会话采到数据后再重标
-  （`calibration-replay.mjs` 的候选配置已支持 `tokens` 字段，如 `past200Floor12k`）。
+- **标定状态**：`heavyCtxTokens` / `heavyToolResults` / `heavyUserChars` 已按本部署重标（见「阈值标定」）；
+  `contextFloorTokens: 0` 仍保持上游口径——当前 250k 的 heavy 门下它不起决定作用，等换宿主或更长的
+  上下文后再重标（`calibration-replay.mjs` 的候选配置支持 `tokens` 字段，如 `past200Floor12k`）。
 
-## 待标定数据（装上去之后收集）
+## 采数据重标
 
 把 `logDecisions: info` 写进配置，钉档与漏钉的行就会稳定出现在 info 级：
 

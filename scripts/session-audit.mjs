@@ -11,11 +11,18 @@
  */
 import fs from 'node:fs'
 import zlib from 'node:zlib'
+import { homedir } from 'node:os'
+import { join } from 'node:path'
 import { pathToFileURL } from 'node:url'
 
+// Resolve the installed bundle from the Harness data directory, so the tool
+// travels between machines: $DSH_HOME (default ~/.dsh) + $DSH_PROFILE (web).
+const bundleHome = process.env.DSH_HOME ?? join(homedir(), '.dsh')
+const bundleProfile = process.env.DSH_PROFILE ?? 'web'
+const bundleDir = join(bundleHome, 'profiles', bundleProfile, 'node_modules', '@local', 'adaptive-effort-scheduler')
 const args = process.argv.slice(2)
 const distIndex = args.indexOf('--dist')
-const dist = distIndex >= 0 ? args[distIndex + 1] : 'C:/Users/Administrator/.dsh/profiles/web/node_modules/@local/adaptive-effort-scheduler/dist/effort-bands.js'
+const dist = distIndex >= 0 ? args[distIndex + 1] : join(bundleDir, 'dist', 'effort-bands.js')
 // Optional ISO cutoff: ignore turns that happened before the plugin ran, so a
 // corpus of long-lived sessions measures only post-install behavior.
 const sinceArg = args.indexOf('--since')
@@ -25,7 +32,7 @@ const since = sinceArg >= 0 ? Date.parse(args[sinceArg + 1]) : Number.NEGATIVE_I
 const patchIndex = args.indexOf('--config-file')
 const patchFile = patchIndex >= 0
   ? args[patchIndex + 1]
-  : 'C:/Users/Administrator/.dsh/profiles/web/node_modules/@local/adaptive-effort-scheduler/cordis.patch.yml'
+  : join(bundleDir, 'cordis.patch.yml')
 const skip = new Set()
 for (const flagIndex of [distIndex, sinceArg, patchIndex]) {
   if (flagIndex >= 0) skip.add(flagIndex).add(flagIndex + 1)

@@ -5,7 +5,7 @@
 # row at ./src/index.ts instead if your loader runs TypeScript sources.
 #
 # Every key below is optional. The active values are the ones CALIBRATED for
-# this deployment (see the 标定记录 in README.md); the upstream constants ported
+# this deployment (see 「阈值标定」 in README.md); the upstream constants ported
 # from OmniRoute `open-sse/services/adaptiveEffort.ts:33-37` are named in each
 # comment. Omit `config` entirely to get the upstream constants.
 
@@ -19,15 +19,15 @@
     trivialCtxTokens: 4000
     # --- what decides `high` (calibrated; upstream in parentheses) ---
     # Estimated context tokens at or above this is heavy work. Upstream: 60000 —
-    # one ordinary work session here crosses 180k, so it latched `high` for good.
+    # the count is cumulative, so in a long session that value latches `high` for
+    # good; 250000 keeps it a late-session signal.
     heavyCtxTokens: 250000
-    # Tool results accumulated before the ask. Upstream: 6 — here that trips by
-    # turn 3 and never comes back (the count is cumulative, folding does not
-    # reset it), so it is a latch rather than a signal at that value.
+    # Tool results accumulated before the ask. Upstream: 6 — also cumulative and
+    # never reset by folding, so at that value it is a latch rather than a signal.
     heavyToolResults: 200
     # Size of the ask. Upstream: 4000 — a Harness user message carries injected
-    # framework text (task-state card, retrieved context), measured at up to
-    # 100% of the block, so 4000 punishes short questions inside long sessions.
+    # framework text (task-state card, retrieved context) that is not part of the
+    # human ask, so 4000 punishes short questions inside long sessions.
     heavyUserChars: 15000
     # Calibration for the token gate. Upstream counted the whole request body
     # (system prompt + tool schemas included); the Harness session log keeps
@@ -44,10 +44,10 @@
     # that mirror the session effort into auxiliary calls (fold summary, session
     # title, auto-review) can tell a machine pin from a human choice.
     publishPins: true
-    # --- option 2: KV relief ---
+    # --- KV relief ceiling ---
     # Ceiling on what may be written, intersected with the route's declared
-    # levels. Measured over the same 50 turns: low 6% / medium 94% / high 0%,
-    # thinking cost -30%, 3 writes. Also the fix for a separately configured
+    # levels: every turn then stays at `medium` or below, with no escalation in
+    # the back half of a long session. Also the fix for a separately configured
     # summarization model inheriting an effort its route would reject.
     # allowedEfforts: [low, medium]
     # Where decision lines go: debug (default) | info | none. Raise to `info` for
