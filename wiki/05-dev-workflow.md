@@ -88,12 +88,12 @@ node scripts/gate-attribution.mjs [--preset installed|upstream] "<会话目录>/
 每轮输出 userChars / ctxTokens / toolRes / 触发的 heavy 门（ctx,tools,userChars）/
 **user 消息注入占比**（首 text 块之外的占比估算）。回答"该把哪个门抬到哪"。
 
-### session-audit.mjs — 运行审计（对账）
+### session-audit.mjs — 逐轮对账
 
 ```bash
-node scripts/session-audit.mjs --since <ISO> "<会话目录>\session.v4.jsonl.zstd" ...
-# 可选 --dist <effort-bands.js 路径>（默认取已安装 bundle 的）
-# 可选 --config-file <cordis.patch.yml 路径>（默认取已安装 bundle 的）
+node scripts/session-audit.mjs --since <ISO> "<会话目录>/session.v4.jsonl.zstd" ...
+# 可选 --dist <effort-bands.js 路径>（默认按 $DSH_HOME/$DSH_PROFILE 定位已安装 bundle）
+# 可选 --config-file <cordis.patch.yml 路径>（默认同上，避免按错配置量）
 ```
 
 逐会话输出：轮数/步数/工具结果/折叠次数 | **schedulerWrites**（轮边界、effort-only、未换路由的

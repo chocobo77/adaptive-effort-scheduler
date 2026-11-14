@@ -21,8 +21,7 @@ DeepSeek Harness（DSH）插件：为一次用户轮次**固定**一档推理强
 | [02-modules.md](./02-modules.md) | 目录结构、三个源码模块与测试套件的职责划分、模块间依赖关系 |
 | [03-api.md](./03-api.md) | 关键类型、常量与函数的逐个说明（含签名、语义、边界条件） |
 | [04-config.md](./04-config.md) | 配置系统全解：阈值含义、上游默认值 vs 本部署标定值、cordis.yml / cordis.patch.yml 双形态 |
-| [05-dev-workflow.md](./05-dev-workflow.md) | 构建（免安装依赖的垫片机制）、测试、打包、离线标定/审计工具链、安装与运行方式 |
-| [06-case-study-session-9df5ae49.md](./06-case-study-session-9df5ae49.md) | 真实会话审计案例：用仓库自带脚本逐轮对账，判断插件实际效果与两处静默成因 |
+| [05-dev-workflow.md](./05-dev-workflow.md) | 构建（免安装依赖的垫片机制）、测试、打包、离线标定/对账工具链、安装与运行方式 |
 
 ## 一分钟理解这个项目
 

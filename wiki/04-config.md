@@ -21,7 +21,7 @@
 | `trivialCtxTokens` | 4000 | **4000** | 同上 |
 | `heavyCtxTokens` | 60000 | **250000** | 上下文是累计量：一段正常会话能过 180k，60000 是单向闩锁（第 2–3 轮起永久 high） |
 | `heavyToolResults` | 6 | **200** | 工具结果也是累计量，正常会话能到 400+；6 在第 2–3 轮就锁死 high |
-| `heavyUserChars` | 4000 | **15000** | DSH 的 user 消息被框架注入污染（任务状态卡/检索上下文，实测占 98–100%），4000 会把长会话里的短追问误判 heavy |
+| `heavyUserChars` | 4000 | **15000** | DSH 的 user 消息含框架注入（任务状态卡/检索上下文），4000 会把长会话里的短追问误判 heavy |
 | `contextFloorTokens` | 0 | **0** | 上游在网关里统计整个请求体（含 system prompt + 工具 schema，本部署约 12k tokens）；Harness 会话日志把这两样放在消息列表之外。250k 的 heavy 门下它暂不起决定作用，保持上游口径待重标 |
 
 行为开关（两份文件一致）：
@@ -33,36 +33,21 @@ logDecisions: debug              # 标定期抬到 info
 # allowedEfforts: [low, medium]  # 「选项 2」：彻底退役 high（见下）
 ```
 
-## 3. 标定记录（数据 → 决策的依据链）
+## 3. 为什么安装阈值偏离上游
 
-### 2026-11-04：8 段真实会话 / 50 轮（`calibration-replay.mjs` 离线回放）
+代码默认值就是上游常量；安装配置里的值是按宿主形态重标的。重标用两个开发工具（不参与打包）：
+`calibration-replay.mjs` 按 claim 时刻的同一口径离线重放会话日志，输出档位分布、切换次数
+（每次＝上游一次前缀失效）与思考成本；`gate-attribution.mjs` 逐轮给出三道 heavy 门的原始值与
+触发情况。方向由三条宿主差异决定：
 
-| 配置 | low | medium | high | 切换 | 成本 |
-|---|---|---|---|---|---|
-| 上游原值（6 / 60000 / 4000） | 6% | 10% | **84%** | 5 | 139 |
-| 只抬 tool/context（40 / 150k） | 6% | 14% | 80% | 8 | 137 |
-| **tool 200 / ctx 250k / ask 15k ← 当前安装值** | 6% | **42%** | 52% | 6 | 123 |
-| 同上 + `allowedEfforts: [low, medium]` | 6% | 94% | 0% | 3 | **97** |
+1. **累计量会闩锁**：`toolResults` / `estCtxTokens` 只增不减，上游的 `6` / `60000` 在长工具型会话里
+   早期就永久落到 `high`，折叠也不回落 → 抬到只在会话后半程才可能触发的 `200` / `250000`。
+2. **注入抬高 ask 尺寸**：任务状态卡、检索上下文可能占满整条 user 消息，`4000` 会把长会话里的短追问
+   判成 heavy → 抬到 `15000`，只抓真正的整段粘贴。
+3. **token 估算偏小**：见 §4 第 1 条；`contextFloorTokens` 保持 `0`（上游口径），换宿主时先量再补。
 
-成本口径：low=1 / medium=2 / high=3 求和；"切换"＝档位变化次数，每次＝上游一次前缀失效。
-
-### 2026-11-08：Linux 侧复检（16 段 / 48 有效轮）——无需重标
-
-| 配置 | low | medium | high | 切换 | 成本 |
-|---|---|---|---|---|---|
-| 上游原值 | 23% | 8% | **69%** | 5 | 118 |
-| 当前安装值（past200） | 23% | 50% | 27% | 5 | 98 |
-| + `allowedEfforts: [low, medium]` | 23% | 77% | 0% | 4 | 85 |
-
-要点：`userChars` 门在 48 轮中**单独**触发 high 的次数为 0（≥8k 字符的轮注入率 94–98%，
-且 tools/ctx 门同轮已触发）——该门在本负载只作冗余确认，暂不动。
-
-### 2026-11-10：运行审计（`session-audit.mjs`，20 段 / 88 轮，安装窗内 42 轮）
-
-- 实际分布 **low 14% / medium 55% / high 31%**；42 轮仅 4 次 `request/header reason=change`（＝4 次前缀失效）。
-- 轮内改档 1 次且证明来自外部（侧栏 UI），非本插件。
-- **查出 1.6.5 修的缺陷**：harness 创建/恢复会话时落的带 effort 的 `model/selection` 被旧实现当人工接管
-  → 20 段里 4 段几乎全程静默。
+`allowedEfforts: [low, medium]` 是另一条路线：不动阈值，直接取消 `high`，把思考成本与 KV 压力压到
+上限以下（代价是长会话后半程不再升档）。
 
 ## 4. 口径差异备忘（重标前必读）
 
@@ -88,7 +73,7 @@ logDecisions: debug              # 标定期抬到 info
 # 打包并安装
 ./pack.sh                                     # 产出 release/local-adaptive-effort-scheduler-<ver>.tgz
 dsh plugin --profile <profile> add <本目录>    # 或指向 tgz；或在插件管理器 install_bundle
-# 装后必须重启 DSH（旧进程仍跑旧代码——见 06 案例研究中真实代价）
+# 装后必须重启 DSH：旧进程仍在跑旧代码
 
 # 开发期免打包直挂：把 cordis.yml 放进 profile 后 dsh apply
 ```
