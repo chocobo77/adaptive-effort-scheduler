@@ -2,3 +2,7 @@ node_modules/
 dist/
 *.tgz
 SHA256SUMS.txt
+
+# local-only ops files (sensitive: internal push pipeline)
+docs/GITHUB-PUSH-PIPELINE.md
+scripts/push-github-api.mjs
