@@ -70,7 +70,11 @@ export interface PinRecord {
   readonly turn: number
   /** Wall-clock milliseconds of the pin, for staleness checks. */
   readonly pinnedAt: number
-  /** True when a human picked the effort instead, so the pin no longer rules. */
+  /**
+   * True when a hand-picked effort replaced this pin mid-turn, so the pin no
+   * longer describes what the Session is running. The scheduler is still active:
+   * it re-pins at the next turn boundary.
+   */
   overridden?: true
 }
 

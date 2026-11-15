@@ -54,8 +54,6 @@ export const inject = ['llm']
 
 /** Optional per-row `config` overrides; every field falls back to the upstream constant. */
 export interface SchedulerConfig extends Partial<BandThresholds> {
-  /** Stop scheduling an Agent as soon as its user picks an effort by hand. */
-  readonly respectExplicitSelection?: boolean
   /** Publish each pin to the shared registry so auxiliary-call owners can tell a machine pin from a user choice. */
   readonly publishPins?: boolean
   /**
@@ -83,7 +81,6 @@ export interface SchedulerConfig extends Partial<BandThresholds> {
 /** Materialized policy for one activation. */
 interface ResolvedConfig {
   readonly thresholds: BandThresholds
-  readonly respectExplicitSelection: boolean
   readonly publishPins: boolean
   readonly allowedEfforts: readonly string[] | undefined
   readonly contextFloorTokens: number
@@ -99,6 +96,11 @@ interface ResolvedConfig {
  */
 function resolveConfig(config: SchedulerConfig | undefined, warn: (message: string) => void): ResolvedConfig {
   const source = config !== null && typeof config === 'object' ? config : {}
+  // The one key this plugin used to honor and no longer does, so a stale config
+  // row says why instead of looking like it took effect.
+  if (Object.prototype.hasOwnProperty.call(source, 'respectExplicitSelection')) {
+    warn('adaptive-effort: respectExplicitSelection was removed. A hand-picked effort no longer stops the scheduler: it rules the rest of its turn, and the next turn re-pins by band.')
+  }
   const positive = (value: unknown, fallback: number, label: string): number => {
     if (typeof value === 'number' && Number.isFinite(value) && value >= 0) return value
     if (value !== undefined) {
@@ -130,7 +132,6 @@ function resolveConfig(config: SchedulerConfig | undefined, warn: (message: stri
       heavyToolResults: positive(source.heavyToolResults, DEFAULT_THRESHOLDS.heavyToolResults, 'heavyToolResults'),
       heavyUserChars: positive(source.heavyUserChars, DEFAULT_THRESHOLDS.heavyUserChars, 'heavyUserChars'),
     },
-    respectExplicitSelection: source.respectExplicitSelection !== false,
     publishPins: source.publishPins !== false,
     allowedEfforts,
     contextFloorTokens: positive(source.contextFloorTokens, 0, 'contextFloorTokens'),
@@ -148,8 +149,6 @@ interface PinSlot {
   opened: boolean
   /** Effort this turn pinned, or undefined while unresolved. */
   pinned: string | undefined
-  /** Sticky: the user took control of the effort, so this Agent is left alone. */
-  disabled: boolean
 }
 
 /**
@@ -157,9 +156,6 @@ interface PinSlot {
  * @param ctx - the plugin context.
  * @param config - the plugin row's `config`, if declared.
  */
-/** Sessions whose explicit-effort record survives before the oldest is evicted. */
-const EXPLICIT_SESSION_LIMIT = 1024
-
 /**
  * Mount the scheduler.
  * @param ctx - the plugin context.
@@ -175,25 +171,6 @@ export function apply(ctx: Context, config?: SchedulerConfig): void {
   const probeFailures = new Set<string>()
   /** Agent -> its pin slot. Dropped on `agent/disposed`, so it never outlives an Agent. */
   const slots = new Map<Agent, PinSlot>()
-  /**
-   * Sessions where the user picked the effort by hand. Keyed by session, not
-   * Agent, so the choice also covers Agents created after it (rebuild, resume).
-   * Only a selection that arrives after this Session claimed its first prompt in
-   * this process counts — see `claimedSessions`.
-   */
-  const explicitSessions = new Map<string, true>()
-  /**
-   * Sessions that have claimed a prompt in this process. Before that point a
-   * `model/selection` carrying an effort is the Harness writing the Session's
-   * initial (created) or restored (resumed) selection, not a hand-over: measured
-   * on 20 real sessions, 4 of them carried such a pre-claim effort, and treating
-   * it as an explicit choice silenced the scheduler for the whole Session.
-   */
-  const claimedSessions = new Map<string, true>()
-  /** The pre-claim selection first seen per session, to spot a later differing one. */
-  const preClaimSelections = new Map<string, string>()
-  /** While set, a `model/selection` carrying this effort is our own write's echo. */
-  let selfEcho: string | undefined
 
   const routeKey = (route: ModelSelection): string => `${route.provider}/${route.model}`
 
@@ -234,17 +211,6 @@ export function apply(ctx: Context, config?: SchedulerConfig): void {
     )
   }
 
-  /** Record a key in a bounded store (insertion order is recency), keeping memory flat. */
-  function rememberBounded<V>(store: Map<string, V>, key: string, value: V): void {
-    store.delete(key)
-    store.set(key, value)
-    while (store.size > EXPLICIT_SESSION_LIMIT) {
-      const oldest = store.keys().next()
-      if (oldest.done === true) break
-      store.delete(oldest.value)
-    }
-  }
-
   function primeCapabilities(agent: Agent): void {
     const route = agent.model.current()
     if (route === undefined) return
@@ -283,16 +249,9 @@ export function apply(ctx: Context, config?: SchedulerConfig): void {
   // or `agent/pre-step`.
   ctx.on('agent/inbox/claimed', ({ agent, message, turn }) => {
     if (!canReadCapabilities) return
-    // From the first claim on, this Session is live in this process: an effort
-    // bearing `model/selection` arriving later is a human act, not the Harness
-    // writing the Session's own initial/restored selection.
-    rememberBounded(claimedSessions, String(agent.session.id), true)
-    // A session where the user took over the effort is left alone for good,
-    // whatever Agent currently drives it.
-    if (explicitSessions.has(String(agent.session.id))) return
-    const slot = slots.get(agent) ?? { turn, claimed: [], opened: false, pinned: undefined, disabled: false }
+    const slot = slots.get(agent) ?? { turn, claimed: [], opened: false, pinned: undefined }
     if (slot.turn !== turn) {
-      // New turn: fresh signals. `disabled` is deliberately sticky.
+      // New turn: fresh signals, and the previous turn's pin is dropped with them.
       slot.turn = turn
       slot.claimed = []
       slot.opened = false
@@ -302,7 +261,7 @@ export function apply(ctx: Context, config?: SchedulerConfig): void {
     // A claim inside an already-open turn (steering, injected input, a scheduled
     // delivery): the pin holds. Re-resolving here would change the reasoning
     // config between requests of one turn and pay a cold prompt-cache prefix write.
-    if (slot.opened || slot.disabled) return
+    if (slot.opened) return
     // The opening batch re-resolves on every claim, deliberately. `inbox.claim`
     // emits the queued next-step leftovers BEFORE the turn's own prompt, so the
     // first claim can be an injection rather than the ask; the turn message is
@@ -365,16 +324,11 @@ export function apply(ctx: Context, config?: SchedulerConfig): void {
       && header?.reasoningEffort === effort) return
     // An effort-only selection appends no model-switch notice — the loop adds one
     // only when provider or model changes — so history and its cache prefix hold.
-    selfEcho = effort
-    try {
-      agent.model.select({
-        provider: route.provider,
-        model: route.model,
-        reasoningEffort: effort as NonNullable<ModelSelection['reasoningEffort']>,
-      })
-    } finally {
-      selfEcho = undefined
-    }
+    agent.model.select({
+      provider: route.provider,
+      model: route.model,
+      reasoningEffort: effort as NonNullable<ModelSelection['reasoningEffort']>,
+    })
     logDecision(
       `adaptive-effort: turn ${turn} pinned ${effort} (band ${band}, ${messages.length} messages, route ${routeKey(route)})`,
     )
@@ -393,10 +347,13 @@ export function apply(ctx: Context, config?: SchedulerConfig): void {
   //    exact route the loop is about to use, including a route another plugin
   //    chose, and on a resumed Session it is available long before the first
   //    claim — that is what lets a restored session pin on its first turn.
-  //  - `model/selection` written by a human outranks the scheduler — recorded
-  //    per session, so it holds for Agents built later over the same session.
-  //    A selection that arrives before the Session's first claim in this process
-  //    is the Harness's own initial/restored value and does not count.
+  //  - `model/selection` primes the probe for a route change, and a hand-picked
+  //    effort only marks the published pin as superseded — it never stops the
+  //    scheduler. Upstream's "explicit reasoning always wins" belongs to a
+  //    stateless gateway where every request carries its own field; a Harness
+  //    Session is long-lived, so one click would silence scheduling for the rest
+  //    of the day, and the writes that look like a hand pick (a created or
+  //    resumed Session's own selection) are not one at all.
   ctx.on('session/event', (session, event) => {
     if (event.type === 'request/header') {
       const config = event.data?.header?.config
@@ -405,65 +362,37 @@ export function apply(ctx: Context, config?: SchedulerConfig): void {
       }
       return
     }
-    if (event.type !== 'model/selection' || !policy.respectExplicitSelection) return
+    if (event.type !== 'model/selection') return
     const raw = event.data?.reasoningEffort
     // Only a real effort id counts as a human choice; anything else (absent,
     // empty, malformed) is a model-only change or noise.
     const chosen = typeof raw === 'string' && raw.length > 0 ? raw : undefined
     if (chosen === undefined) {
       // Model-only change: the effort stays schedulable, the new route does not.
-      for (const [agent, slot] of slots) {
-        if (agent.session !== session || slot.disabled) continue
-        primeCapabilities(agent)
+      for (const agent of slots.keys()) {
+        if (agent.session === session) primeCapabilities(agent)
       }
       return
     }
-    // The scheduler's own writes can echo back through this event: skip while
-    // the write is in flight, and treat a selection equal to a live pin as an
-    // echo too (the fallback for hosts that dispatch the event asynchronously).
-    // One caveat, deliberate: a user who happens to pick the currently pinned
-    // effort is indistinguishable from that echo and is not recorded.
-    if (selfEcho === chosen) return
-    for (const [agent, slot] of slots) {
-      if (agent.session === session && slot.pinned === chosen) return
-    }
-    const sessionId = String(session.id)
     const provider = typeof event.data?.provider === 'string' ? event.data.provider : undefined
     const model = typeof event.data?.model === 'string' ? event.data.model : undefined
     if (provider !== undefined && model !== undefined) primeRoute(provider, model)
-    if (!claimedSessions.has(sessionId)) {
-      // Before this Session claims anything in this process, an effort-bearing
-      // selection is the Harness writing its initial (created) or restored
-      // (resumed) selection. Treat that — and a repeat of it — as inherited; only
-      // a *different* pre-claim selection means a human reached for the control.
-      const seen = `${provider ?? '?'}/${model ?? '?'}=${chosen}`
-      const baseline = preClaimSelections.get(sessionId)
-      if (baseline === undefined || baseline === seen) {
-        rememberBounded(preClaimSelections, sessionId, seen)
-        logDecision(`adaptive-effort: "${chosen}" on session ${sessionId} predates its first claim; kept as the Session's own selection, not a hand-over`)
-        return
-      }
-    }
-    // A selection identical to what the Agent already carries is a re-assertion
-    // (a resume or an options replay re-applying the Session's stored choice) —
-    // the observed seams put those right at turn boundaries, after a claim. A
-    // hand-over changes the value, so only a change counts; honoring an
-    // unchanged one would silence the Session on every resume.
-    for (const agent of slots.keys()) {
-      if (agent.session !== session) continue
-      const now = agent.model.current()
-      if (now === undefined) continue
-      if ((provider ?? now.provider) !== now.provider) continue
-      if ((model ?? now.model) !== now.model) continue
-      if ((now.reasoningEffort ?? undefined) === chosen) return
-    }
-    rememberBounded(explicitSessions, sessionId, true)
+    // A hand pick rules the rest of this turn by itself — the scheduler never
+    // writes inside an open turn — and the next boundary re-pins from the band.
+    // The only bookkeeping is honesty toward readers of the published pin: once a
+    // different effort is in effect, the pin no longer describes the Session.
+    const sessionId = String(session.id)
+    let superseded = false
     for (const [agent, slot] of slots) {
-      if (agent.session !== session || slot.disabled) continue
-      slot.disabled = true
+      if (agent.session !== session) continue
+      if (slot.pinned === undefined || slot.pinned === chosen) continue
       const published = policy.publishPins ? pinRegistry().get(sessionId) : undefined
       if (published !== undefined && published.effort === slot.pinned) published.overridden = true
+      slot.pinned = undefined
+      superseded = true
     }
-    logDecision(`adaptive-effort: explicit effort "${chosen}" wins; scheduler idle for session ${sessionId}`)
+    if (superseded) {
+      logDecision(`adaptive-effort: hand pick "${chosen}" now rules session ${sessionId}; the next turn re-pins by band`)
+    }
   })
 }

@@ -27,7 +27,6 @@
 行为开关（两份文件一致）：
 
 ```yaml
-respectExplicitSelection: true   # 人工选档后该会话永久让位
 publishPins: true                # 发布钉档到进程内注册表
 logDecisions: debug              # 标定期抬到 info
 # allowedEfforts: [low, medium]  # 「选项 2」：彻底退役 high（见下）

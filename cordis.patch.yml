@@ -40,7 +40,4 @@
         # then stays at `medium` or below, at the cost of no escalation in the
         # back half of a long session. ---
         # allowedEfforts: [low, medium]
-        # A hand-picked effort wins for the whole Session; the Harness's own
-        # initial/restored selection (written before the first claim) does not.
-        respectExplicitSelection: true
         logDecisions: debug

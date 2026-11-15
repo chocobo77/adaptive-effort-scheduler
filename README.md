@@ -138,7 +138,6 @@ node scripts/calibration-replay.mjs --config upstream,past200,past200Plus2 --fil
 - 五个阈值：`trivialUserChars` / `trivialCtxTokens` / `heavyCtxTokens` / `heavyToolResults` / `heavyUserChars`
 - `contextFloorTokens`（默认 0）：把会话日志外的 system prompt + 工具 schema 补进 token 估算
 - `allowedEfforts`（默认沿用路由声明集合）：可写入档位的硬上限，与路由能力取交集
-- `respectExplicitSelection`（默认 true）：UI 手选档位后该 Agent 交给用户
 - `publishPins`（默认 true）：把每次钉档发布到进程内注册表，供辅助调用的所有者区分机器/人工
 
 ## 开发与验证
@@ -163,18 +162,15 @@ npm 发布的类型面可能落后于 checkout。`$DSH_TSC` 可显式指定 tsc.
 
 ## 已知行为（已确认，别忘了）
 
-1. **手动选择后永久粘滞；但会话自己的档位写入不算手选**。一旦本插件看到一条"不是自己写的"且带
-   effort 的 `model/selection`，**该会话**的调度立即停用且不再自动恢复——记录按 session 而非 Agent
-   保存，所以对之后重建/恢复出的 Agent 同样生效。直到 DSH 重启、插件重载，或你把
-   `respectExplicitSelection: false` 写进配置。这是刻意照搬上游优先级规则 #1（"显式 reasoning 字段
-   永远赢"），不是 bug。只换模型不带 effort 时不会停用，只会重探新路线的能力。
-   边界（1.6.5 起）：在该会话于本进程内**首次 claim 之前**到达的 effort 写入，视为 harness 自己写的
-   初始/恢复值（创建会话或 resume 时它会落一条 selection），不算接管；重复的同值同样不算；只有随后
-   出现的**不同**值才算人工接管。同理，与 Agent 当前 selection **三值全同**（provider/model/effort）的
-   写入视为 resume 重新施加旧值，不算接管（1.6.6）——这类写入落在轮边界、claim 之后，把它当接管会让
-   每次 resume 都静默整段会话。
-   一处判别极限：若你恰好手选了**当前钉住的同一档位**，它与插件自己写入的回声无法区分，
-   不会被记为接管——到档位随下一轮变化时插件会重新覆盖，届时再选一次即可。
+1. **手选只统治它所在的那一轮，不让位、也不粘滞**。你在 UI 里选了档位后，插件不会在轮内写回
+   （轮内从不改档，那才是一次前缀失效），所以你选的值在当前轮照常生效；**下一个轮次边界重新按
+   band 钉档**，包括覆盖你选的档位。这是刻意偏离上游优先级规则 #1（"显式 reasoning 字段永远赢"）：
+   上游是无状态网关，每个请求自带 reasoning 字段，"赢"只在那一个请求里成立；而 Harness 的会话是长命
+   的，一次点击若永久生效，之后整天都不会再自适应。何况创建/恢复会话时 harness 自己就会落一条带
+   effort 的 `model/selection`，把它当"用户的选择"更是错的——现在这类判别整个不需要了。
+   已发布的 pin 会被标 `overridden`，让读它的插件（例如把会话档位镜像进摘要调用的折叠插件）看清
+   "此刻生效的不再是插件钉的档"，插件本身继续调度。配置项 `respectExplicitSelection` 已移除；配置行
+   里还留着它的话，插件会 warn 一次说明它不再起作用。只换模型不带 effort 时行为不变：重探新路线能力。
 2. **折叠后下一轮可能降档，代价是一次上游前缀失效**。折叠把历史变小 → 下一轮的 `estCtxTokens`
    跨过门槛往回走（例如 `high → medium`），这是"每轮调度"的固有代价。**pre-step 之后绝不改档**：
    开局批（含其内多条 claim 的逐条重算）定下的档位，轮内的转向注入、定时投递、工具结果都不会触发重算。

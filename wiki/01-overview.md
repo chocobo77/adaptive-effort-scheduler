@@ -59,7 +59,7 @@ HTTP 转发、鉴权、模型路由、负载均衡与 Reasoning Replay Cache，�
 | `agent/pre-step` | 第一步被提出 | 封口：`slot.opened = true`，本轮不再判 |
 | `agent/disposed` | Agent 销毁 | 清理槽位；最后一个同会话 Agent 销毁时清 pin 注册表 |
 | `llm/models-updated` / `llm/adapters-updated` | profile 改动 | 清空能力缓存并对活着的 Agent 重探 |
-| `session/event`（`request/header`、`model/selection` 两个子类型） | 会话日志事件 | 预热路由 / 检测人工接管 |
+| `session/event`（`request/header`、`model/selection` 两个子类型） | 会话日志事件 | 预热路由 / 手选生效时把已发布 pin 标为 `overridden` |
 
 ### 一次轮次的完整时序
 
@@ -70,9 +70,7 @@ request/header ─┘
       │
       ▼
 agent/inbox/claimed(turn N)          ◀── 钉档点
-  ├─ 会话已 claim？记入 claimedSessions（此后带 effort 的选择才算人工）
-  ├─ 会话已被人工接管？→ 直接返回
-  ├─ slot.turn ≠ N？→ 重置槽位（新轮次，disabled 粘滞除外）
+  ├─ slot.turn ≠ N？→ 重置槽位（新轮次）
   ├─ slot.opened（轮内后续 claim）？→ 保持钉档，返回
   ├─ slot.claimed.push(消息)；拼窗口 = deriveMessages() + claimed
   ├─ resolveBand(窗口, thresholds, floor) → band
@@ -115,21 +113,18 @@ agent/pre-step(turn N, step 1)       ◀── 封口：slot.opened = true
 在数学上不可能改变档位——pin 是判定函数本身的性质，不是外挂状态。
 （接线里 `turnDepth` 实际恒为 1：钉档时窗口最后一条就是本轮 user 消息；保留它是为了对上游保真、可独立测试。）
 
-### 4.3 人工接管让位（respectExplicitSelection）
+### 4.3 手选不让位（1.7.0 起；`respectExplicitSelection` 已移除）
 
-上游优先级规则 #1："显式 reasoning 字段永远赢"。落地为三级判别，对应三个真实缺陷的修复史：
+上游优先级规则 #1 是"显式 reasoning 字段永远赢"。上游是无状态网关：每个请求自带 reasoning 字段，
+"赢"只在那一个请求里成立。Harness 的会话是长命的，同一条规则落到这里就变成**一次点击永久停用调度**，
+而且带 effort 的 `model/selection` 并非只有点击才会出现——创建会话、resume 恢复、options replay
+都会落一条。判别"这是不是人手的"本身做不到得可靠（回声、重放、初始值三者在事件流里同形）。
 
-1. **自己写的回声不算**：插件写入期间设置 `selfEcho`，同值事件跳过；异步派发的宿主上，
-   与活跃 pin 相等的 selection 也视为回声。（代价：用户恰好手选了当前钉住档位时无法区分，不算接管。）
-2. **会话自己的初始/恢复选择不算**（1.6.5）：会话在**本进程内首次 claim 之前**到达的带 effort
-   selection 是 Harness 写的初始（创建）或恢复（resume）值——首见值记为基线，重复同值仍是继承，
-   只有 claim 前出现**不同**值才算人工。
-   旧实现把它们当接管导致整段会话静默。
-3. **与当前 selection 三值全同的写入不算**（1.6.6）：resume / options replay 会重新施加会话
-   存储的选择，这类写入落在轮边界、claim 之后；只有**值发生变化**才算接管，否则每次 resume 都会静默整段会话。
-
-接管记录按 **session**（而非 Agent）保存，因此对之后重建/恢复出的 Agent 同样生效，
-直到 DSH 重启、插件重载，或配置 `respectExplicitSelection: false`。
+因此这里刻意偏离上游：**手选只统治它所在的那一轮**。轮内插件从不写回（轮内改档才是前缀失效），
+所以手选值在当前轮照常生效；下一个轮次边界按 band 重新钉档，必要时覆盖它。事件流里唯一的处理是：
+带 effort 且与本轮 pin 不同的 selection → 把进程内注册表里已发布的 pin 标 `overridden`（镜像会话档位的
+插件据此知道此刻生效的不是插件钉的档），并清掉本槽位的 pin 记录。配置行里残留的
+`respectExplicitSelection` 会 warn 一次，不再生效。
 
 ### 4.4 档位钳制（宁可不钉，也不报错）
 
@@ -170,9 +165,6 @@ if (!isAuxiliaryRequest(options) || pin === undefined || pin.overridden === true
 | `capabilities: Map<route, efforts[]>` | 闭包 | profile 更新事件时清空重探 |
 | `probing` / `probeFailures` | 闭包 | 探测去重 / 失败路由每路由警告一次 |
 | `slots: Map<Agent, PinSlot>` | 闭包 | `agent/disposed` 时删除 |
-| `explicitSessions: Map<sessionId>` | 闭包 | 进程内；上限 1024 条 LRU |
-| `claimedSessions` / `preClaimSelections` | 闭包 | 进程内；上限 1024 条 LRU |
-| `selfEcho` | 闭包变量 | 一次 `select()` 调用期间 |
 | pin 注册表 | `globalThis[Symbol.for(...)]` | 最后一个同会话 Agent dispose 时清；上限 256 条 LRU |
 
 ## 7. 已知边界（README「已知行为/已知边界」的浓缩）

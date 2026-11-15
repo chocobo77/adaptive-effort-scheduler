@@ -1,11 +1,12 @@
 /**
  * Wiring test: a fake Context and Agent exercise the per-turn pin end to end —
  * the choice must be written before the loop captures the step selection, hold
- * fixed for every step of that turn, and yield to an explicit user selection.
+ * fixed for every step of that turn, and survive whatever the user picks by hand.
  */
 import { describe, expect, it } from 'vitest'
 
 import { apply } from '../src/index.ts'
+import { pinRegistry } from '../src/auxiliary.ts'
 
 type Selection = { provider: string; model: string; reasoningEffort?: string }
 type Msg = { role: string; content: unknown }
@@ -257,9 +258,11 @@ describe('per-turn pin', () => {
     expect(harness.written).toEqual(['high'])
   })
 
-  it('yields permanently to an explicit user effort', async () => {
+  it('re-pins at the next boundary after the user picks an effort by hand', async () => {
+    // A hand pick rules the rest of its turn on its own — the scheduler never
+    // writes inside an open turn — and the next turn is decided by the band again.
     const harness = createHarness(['low', 'medium', 'high'])
-    apply(cast(harness).ctx)
+    apply(cast(harness).ctx, { heavyToolResults: 1000, heavyCtxTokens: 1_000_000_000, heavyUserChars: 1_000_000_000 })
     cast(harness).ctx.fire('agent/created', { agent: cast(harness).agent })
     await harness.settle()
     cast(harness).ctx.fire('agent/inbox/claimed', {
@@ -267,48 +270,49 @@ describe('per-turn pin', () => {
     })
     expect(harness.written).toEqual(['low'])
 
-    // The user picks `high` in the UI: a model/selection the scheduler did not write.
     harness.setHeader({ provider: 'strata', model: 'qwen3.8-flash-next', reasoningEffort: 'high' })
+    harness.setCurrent({ provider: 'strata', model: 'qwen3.8-flash-next', reasoningEffort: 'high' })
     cast(harness).ctx.fire('session/event', harness.agent.session, {
       type: 'model/selection',
       data: { provider: 'strata', model: 'qwen3.8-flash-next', reasoningEffort: 'high' },
     })
-    cast(harness).ctx.fire('agent/inbox/claimed', {
-      agent: cast(harness).agent, turn: 2, message: { role: 'user', content: 'now a big refactor of the parser, with tests, benchmarks and a migration plan' },
-    })
+    // Nothing is written back over the pick inside the same turn.
     expect(harness.written).toEqual(['low'])
-  })
+    cast(harness).ctx.fire('agent/pre-step', {
+      agent: cast(harness).agent, turn: 1, step: 1, messages: [], signal: undefined,
+    }, () => Promise.resolve({ kind: 'enter', messages: [] }))
 
-  it('keeps scheduling when a resume re-asserts the current selection', async () => {
-    // Resumes re-apply the Session's stored selection after the first claim, at a
-    // turn boundary. Identical value means nothing was chosen by hand, so the
-    // scheduler must keep working rather than fall silent for the whole Session.
-    const harness = createHarness(['low', 'medium', 'high'])
-    apply(cast(harness).ctx)
-    cast(harness).ctx.fire('agent/created', { agent: cast(harness).agent })
-    await harness.settle()
-    cast(harness).ctx.fire('agent/inbox/claimed', {
-      agent: cast(harness).agent, turn: 1, message: { role: 'user', content: 'hi there' },
-    })
-    expect(harness.written).toEqual(['low'])
-
-    harness.setHeader({ provider: 'strata', model: 'qwen3.8-flash-next', reasoningEffort: 'medium' })
-    harness.setCurrent({ provider: 'strata', model: 'qwen3.8-flash-next', reasoningEffort: 'medium' })
-    cast(harness).ctx.fire('session/event', harness.agent.session, {
-      type: 'model/selection',
-      data: { provider: 'strata', model: 'qwen3.8-flash-next', reasoningEffort: 'medium' },
-    })
     harness.setHistory(msgMany(12))
     cast(harness).ctx.fire('agent/inbox/claimed', {
       agent: cast(harness).agent, turn: 2, message: { role: 'user', content: 'and now?' },
     })
-    expect(harness.written).toEqual(['low', 'high'])
+    expect(harness.written).toEqual(['low', 'medium'])
   })
 
-  it('keeps scheduling when the pre-claim selection is the Sessions own value', async () => {
-    // The Harness writes the Session's initial (created) or restored (resumed)
-    // selection before anyone prompts. Measured on real sessions, treating that
-    // write as a hand-over silenced the scheduler for the whole Session.
+  it('marks the published pin superseded while a hand pick rules', async () => {
+    // Readers of the registry (an auxiliary-call owner mirroring the session's
+    // effort) must be able to see that the pin no longer describes the Session.
+    const harness = createHarness(['low', 'medium', 'high'])
+    apply(cast(harness).ctx)
+    cast(harness).ctx.fire('agent/created', { agent: cast(harness).agent })
+    await harness.settle()
+    cast(harness).ctx.fire('agent/inbox/claimed', {
+      agent: cast(harness).agent, turn: 1, message: { role: 'user', content: 'hi there' },
+    })
+    expect(pinRegistry().get('s1')?.effort).toBe('low')
+    expect(pinRegistry().get('s1')?.overridden).toBeUndefined()
+
+    cast(harness).ctx.fire('session/event', harness.agent.session, {
+      type: 'model/selection',
+      data: { provider: 'strata', model: 'qwen3.8-flash-next', reasoningEffort: 'high' },
+    })
+    expect(pinRegistry().get('s1')?.overridden).toBe(true)
+  })
+
+  it('pins the first turn of a Session that arrives with its own selection', async () => {
+    // A created or resumed Session carries an effort in its own initial
+    // selection. That is not a hand pick, and there is no hand-over to decide:
+    // the scheduler pins the first turn like any other.
     const harness = createHarness(['low', 'medium', 'high'])
     apply(cast(harness).ctx)
     cast(harness).ctx.fire('session/event', harness.agent.session, {
@@ -317,7 +321,6 @@ describe('per-turn pin', () => {
     })
     cast(harness).ctx.fire('agent/created', { agent: cast(harness).agent })
     await harness.settle()
-    // A repeat of the same selection (a resume re-applying it) stays inherited.
     cast(harness).ctx.fire('session/event', harness.agent.session, {
       type: 'model/selection',
       data: { provider: 'strata', model: 'qwen3.8-flash-next', reasoningEffort: 'high' },
@@ -328,28 +331,7 @@ describe('per-turn pin', () => {
     expect(harness.written).toEqual(['low'])
   })
 
-  it('yields when a different selection arrives before the first claim', async () => {
-    // No claim yet, but a second, different selection is a hand reaching for the
-    // control rather than the Harness restoring its own value.
-    const harness = createHarness(['low', 'medium', 'high'])
-    apply(cast(harness).ctx)
-    cast(harness).ctx.fire('session/event', harness.agent.session, {
-      type: 'model/selection',
-      data: { provider: 'strata', model: 'qwen3.8-flash-next', reasoningEffort: 'high' },
-    })
-    cast(harness).ctx.fire('agent/created', { agent: cast(harness).agent })
-    await harness.settle()
-    cast(harness).ctx.fire('session/event', harness.agent.session, {
-      type: 'model/selection',
-      data: { provider: 'strata', model: 'qwen3.8-flash-next', reasoningEffort: 'medium' },
-    })
-    cast(harness).ctx.fire('agent/inbox/claimed', {
-      agent: cast(harness).agent, turn: 1, message: { role: 'user', content: 'hi there' },
-    })
-    expect(harness.written).toEqual([])
-  })
-
-  it('keeps a session-level explicit choice after the Agent is rebuilt', async () => {
+  it('keeps pinning for a rebuilt Agent over a Session where the user picked', async () => {
     const harness = createHarness(['low', 'medium', 'high'])
     apply(cast(harness).ctx)
     cast(harness).ctx.fire('agent/created', { agent: cast(harness).agent })
@@ -366,7 +348,7 @@ describe('per-turn pin', () => {
     })
     cast(harness).ctx.fire('agent/disposed', { agent: cast(harness).agent })
 
-    // A new Agent over the same session (rebuild, resume) must not reschedule.
+    // A new Agent over the same session (rebuild, resume) schedules as usual.
     const rebuiltWrites: string[] = []
     const rebuilt = {
       session: harness.agent.session,
@@ -381,10 +363,10 @@ describe('per-turn pin', () => {
     cast(harness).ctx.fire('agent/inbox/claimed', {
       agent: rebuilt as never, turn: 1, message: { role: 'user', content: 'hi there' },
     })
-    expect(rebuiltWrites).toEqual([])
+    expect(rebuiltWrites).toEqual(['low'])
   })
 
-  it('treats a selection equal to the live pin as its own echo, not a takeover', async () => {
+  it('leaves the pin standing when a selection equals what it already pinned', async () => {
     const harness = createHarness(['low', 'medium', 'high'])
     apply(cast(harness).ctx)
     cast(harness).ctx.fire('agent/created', { agent: cast(harness).agent })
@@ -394,12 +376,13 @@ describe('per-turn pin', () => {
     })
     expect(harness.written).toEqual(['low'])
 
-    // The write echoes back with the effort the scheduler itself pinned.
+    // Either the scheduler's own write echoing back or the user choosing the same
+    // level: the pin still describes the Session, so nothing is marked over.
     cast(harness).ctx.fire('session/event', harness.agent.session, {
       type: 'model/selection',
       data: { provider: 'strata', model: 'qwen3.8-flash-next', reasoningEffort: 'low' },
     })
-    // Scheduling must continue on the next turn.
+    expect(pinRegistry().get('s1')?.overridden).toBeUndefined()
     harness.setHistory(msgMany(12))
     cast(harness).ctx.fire('agent/inbox/claimed', {
       agent: cast(harness).agent, turn: 2, message: { role: 'user', content: 'and now?' },

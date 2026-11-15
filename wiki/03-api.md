@@ -78,7 +78,7 @@ interface PinRecord {
   band: string                          // 钳制前的判定 band
   turn: number                          // 所属轮次
   pinnedAt: number                      // 毫秒时间戳（供过期判断）
-  overridden?: true                     // 人工接管后置位
+  overridden?: true                     // 手选生效后置位（插件仍在调度，次轮重钉）
 }
 ```
 
@@ -118,7 +118,6 @@ export function apply(ctx: Context, config?: SchedulerConfig): void
 | `heavyUserChars` | number · 4000 | high 门的提问字符下限 |
 | `contextFloorTokens` | number · 0 | 把会话日志外（system prompt + 工具 schema）补进 token 估算；0＝严格上游口径 |
 | `allowedEfforts` | string[] · 未设 | 可写档位硬上限（与路由声明取交集） |
-| `respectExplicitSelection` | boolean · true | 人工选择后该会话永久让位 |
 | `publishPins` | boolean · true | 发布钉档到进程内注册表 |
 | `logDecisions` | `'none'\|'debug'\|'info'` · debug | 决策日志级别（标定期抬到 info） |
 
@@ -132,12 +131,11 @@ interface PinSlot {
   turn: number                    // 槽位所属轮次
   claimed: ShapedMessage[]        // 本轮已 claim 的消息（提示词尚未进派生历史）
   opened: boolean                 // 首个 pre-step 后置位 → 本轮封口
-  pinned: string | undefined      // 本轮钉住的档位（判定未落时 undefined）
-  disabled: boolean               // 人工接管粘滞位
+  pinned: string | undefined      // 本轮钉住的档位（判定未落或已被手选覆盖时 undefined）
 }
 ```
 
-### 免写检查（skip-write，`index.ts:360-365`）
+### 免写检查（skip-write，`index.ts:312-325`）
 
 写入前两个跳过条件，都只在**同路由**下成立：
 
@@ -152,8 +150,8 @@ interface PinSlot {
 ```
 adaptive-effort: turn N pinned <effort> (band <band>, M messages, route <provider/model>)
 adaptive-effort: turn N unpinned, capabilities of <route> not resolved yet
-adaptive-effort: "<effort>" on session <id> predates its first claim; kept as the Session's own selection, not a hand-over
-adaptive-effort: explicit effort "<effort>" wins; scheduler idle for session <id>
+adaptive-effort: hand pick "<effort>" now rules session <id>; the next turn re-pins by band
+adaptive-effort: respectExplicitSelection was removed. …            （warn，配置行残留时一次）
 adaptive-effort: resolveModelInfo(<route>) failed; turns stay unpinned until it succeeds   （warn，每路由一次）
 ```
 

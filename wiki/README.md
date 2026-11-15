@@ -17,7 +17,7 @@ DeepSeek Harness（DSH）插件：为一次用户轮次**固定**一档推理强
 
 | 文档 | 内容 |
 |---|---|
-| [01-overview.md](./01-overview.md) | 项目定位、整体架构、事件流与生命周期、核心设计决策（钉档缝的选择、per-turn pin、接管让位） |
+| [01-overview.md](./01-overview.md) | 项目定位、整体架构、事件流与生命周期、核心设计决策（钉档缝的选择、per-turn pin、手选不让位） |
 | [02-modules.md](./02-modules.md) | 目录结构、三个源码模块与测试套件的职责划分、模块间依赖关系 |
 | [03-api.md](./03-api.md) | 关键类型、常量与函数的逐个说明（含签名、语义、边界条件） |
 | [04-config.md](./04-config.md) | 配置系统全解：阈值含义、上游默认值 vs 本部署标定值、cordis.yml / cordis.patch.yml 双形态 |

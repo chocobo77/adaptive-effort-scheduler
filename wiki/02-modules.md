@@ -35,7 +35,7 @@ adaptive-effort-scheduler/
 ```
             ┌─────────────────────────────┐
             │  src/index.ts（插件接线）     │  ←── 唯一 import 宿主类型的地方（type-only）
-            │  事件监听/槽位/接管判别/写入   │
+            │  事件监听/槽位/手选记账/写入    │
             └──────────┬──────────┬───────┘
               value import     value import
                        ▼          ▼
@@ -63,13 +63,12 @@ adaptive-effort-scheduler/
 | 成员 | 行（约） | 职责 |
 |---|---|---|
 | `name` / `inject` | 52-53 | 插件标识与依赖声明（`llm` 服务） |
-| `SchedulerConfig` | 56-81 | 配置面：5 阈值 + 5 行为开关，全部可选 |
-| `ResolvedConfig` / `resolveConfig()` | 84-139 | 配置合并：非法值回退默认并 `warn`（typo 不许静默） |
-| `PinSlot` | 142-153 | 每 Agent 的轮次槽位：`turn / claimed[] / opened / pinned / disabled` |
-| `EXPLICIT_SESSION_LIMIT` | 161 | 接管记录上限 1024（LRU） |
-| `apply(ctx, config?)` | 168-469 | 插件主体，见下 |
-| `routeKey()` | 198 | `` `${provider}/${model}` `` 能力缓存键 |
-| `logDecision()` | 201-205 | 按 `logDecisions` 配置落 debug/info/静默 |
+| `SchedulerConfig` | 56-79 | 配置面：5 阈值 + 3 行为开关，全部可选 |
+| `ResolvedConfig` / `resolveConfig()` | 82-140 | 配置合并：非法值回退默认并 `warn`（typo 不许静默；已移除的 `respectExplicitSelection` 单独 warn） |
+| `PinSlot` | 143-152 | 每 Agent 的轮次槽位：`turn / claimed[] / opened / pinned` |
+| `apply(ctx, config?)` | 164-398 | 插件主体，见下 |
+| `routeKey()` | 175 | `` `${provider}/${model}` `` 能力缓存键 |
+| `logDecision()` | 178-183 | 按 `logDecisions` 配置落 debug/info/静默 |
 | `primeRoute()` | 215-235 | 异步能力探测：去重、缓存、失败每路由警告一次 |
 | `rememberBounded()` | 238-246 | 上限 LRU 通用写（insertion order = recency） |
 | 事件监听 | 254-468 | 见 [01-overview §3](./01-overview.md#3-事件流与生命周期) |
@@ -80,9 +79,8 @@ adaptive-effort-scheduler/
 
 ```
 canReadCapabilities? ─否→ 返回（启动时已 warn）
-记 claimedSessions；explicitSessions 命中? → 返回
-slot 轮次重置（disabled 粘滞）
-slot.opened 或 disabled? → 返回（轮内冻结）
+slot 轮次重置
+slot.opened? → 返回（轮内冻结）
 slot.claimed.push(message)
 route = agent.model.current()；undefined → 返回
 declared = capabilities[routeKey]；undefined → 记 unpinned 日志 + primeCapabilities + 返回
@@ -92,29 +90,29 @@ band = resolveBand(window, thresholds, {tokens: contextFloorTokens})
 effort = clampBand(band, allowed)；undefined → 返回
 slot.pinned = effort；publishPin()（可选）
 免写检查（同路由已带该 effort，或 pending 为空且 header 同路由同值）→ 跳过
-selfEcho 保护下 agent.model.select({provider, model, reasoningEffort})
+agent.model.select({provider, model, reasoningEffort})
 logDecision("turn N pinned <effort> (band <band>, M messages, route …)")
 ```
 
-### `session/event` 处理器（接管判别）
+### `session/event` 处理器（路由预热 + 手选记账）
 
 ```
 request/header → primeRoute(header 的 provider/model)      # 恢复会话首轮可钉的关键
-model/selection（respectExplicitSelection 时）：
+model/selection：
   effort 缺失/非字符串 → 视为只换模型：重探能力，返回
-  selfEcho 命中 / 等于某活跃 pin → 自己的回声，返回
-  会话从未 claim（claimedSessions 无）→ 首见记基线；同值重复仍是继承；只有不同值才算接管
-  与某 Agent 当前 selection 三值全同 → re-assertion（resume 重施），返回
-  其余 → 真接管：explicitSessions 记录；所有相关 slot.disabled = true；
-          已发布 pin 标 overridden；logDecision("explicit effort wins; scheduler idle")
+  primeRoute(event 里的 provider/model)
+  effort 与本轮 slot.pinned 不同 → 已发布 pin 标 overridden、slot.pinned 清空，
+          logDecision("hand pick \"<effort>\" now rules session <id>; the next turn re-pins by band")
+  effort 与 pin 相同（自己的回声，或恰好同值手选）→ 什么都不标
 ```
+没有任何"是否人工"的判别，也没有停用路径：手选在当前轮生效（轮内不写回），下一轮边界按 band 重钉。
 
 ## 4. 测试套件职责
 
 | 套件 | 覆盖 | 代表用例 |
 |---|---|---|
 | `effort-bands.test.ts` | 上游测试向量 1:1 保真；Harness 块状 content 形状；钳制；阈值覆盖 | "trivial→low"、"6 个工具结果→high"、"mid-loop 工具爆发不改档"、`clampBand('high', ['off','minimal','low']) → 'low'` |
-| `scheduler.test.ts` | 用 fake Context/Agent 走完整接线 | "开局钉 low、轮内大注入不动、次轮重算 medium"；"开局批最后一条 claim 胜出"；"免写检查三个分支"；"1.6.5/1.6.6 三个接管边界"；"resume 重施同值不静默"；"profile 更新后重探"；"探针只发一次"；"非法配置 warn 且不动作" |
+| `scheduler.test.ts` | 用 fake Context/Agent 走完整接线 | "开局钉 low、轮内大注入不动、次轮重算 medium"；"开局批最后一条 claim 胜出"；"免写检查三个分支"；"手选不让位：当前轮不写回、次轮边界按 band 重钉"；"手选生效后 pin 标 overridden、同值则不标"；"自带 selection 的会话首轮照钉"；"重建 Agent 仍调度"；"profile 更新后重探"；"探针只发一次"；"非法配置 warn 且不动作" |
 | `auxiliary.test.ts` | 判据开放性（任意 purpose 字符串）；注册表发布/覆盖标记/关闭发布/dispose 清理/兄弟 Agent 共享/LRU 上限 | — |
 
 测试不 mock 模块，只 fake 宿主面（`ctx.on/fire`、`agent.model.current/select`、`session.deriveMessages/requestHeader`）；
