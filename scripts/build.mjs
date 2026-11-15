@@ -164,6 +164,10 @@ function buildShim(depsRoot) {
     for (const entry of readdirSync(typesDir)) shimLink(join(typesDir, entry), join(typesTarget, entry))
   }
   shimLink(join(depsRoot, '@standard-schema'), join(nodeModules, '@standard-schema'))
+  // The vitest package itself, so the test step can run its entry through node
+  // in shells that cannot execute a Windows .bin wrapper.
+  const vitestPkg = join(depsRoot, 'vitest')
+  if (isDirectory(vitestPkg)) shimLink(vitestPkg, join(nodeModules, 'vitest'))
   // @deepseek-ai: either the whole scope directory (published layout) or one
   // link per workspace package plus the vendor aliases (checkout layout).
   const scope = join(nodeModules, '@deepseek-ai')
