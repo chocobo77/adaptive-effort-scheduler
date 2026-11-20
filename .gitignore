@@ -3,6 +3,11 @@ dist/
 *.tgz
 SHA256SUMS.txt
 
-# local-only ops files (sensitive: internal push pipeline)
-docs/GITHUB-PUSH-PIPELINE.md
-scripts/push-github-api.mjs
+# GitHub 推送链路的脚本与文档随仓库跟踪（此前一度被 ignore 以求隐蔽，但清理前
+# 的旧 SHA 在 GitHub 上仍可能直达，隐蔽性已不成立）。跟踪的前提是：凭据不在
+# 仓库里——脚本运行时经 `git credential fill` 从 Windows 凭据管理器取 token，
+# blob 扫描确认全部 ref 从未出现过 token 字面量。本仓库当前只有文档、无脚本，
+# 两条路径都放开以便与兄弟仓库一致。
+# 任何真的承载凭据的形态一律忽略：
+*.token
+*.credentials
