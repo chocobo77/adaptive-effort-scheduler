@@ -1,7 +1,7 @@
 {
   "name": "@local/adaptive-effort-scheduler",
   "description": "Per-turn adaptive reasoning-effort pin for one local route. / 每轮固定一档推理强度（本地路由）。",
-  "version": "1.7.0",
+  "version": "1.7.1",
   "private": true,
   "type": "module",
   "main": "dist/index.js",
