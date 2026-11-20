@@ -362,7 +362,7 @@ if (TAG) {
 - [ ] `GET /git/ref/tags/<tag>` → tag object → 目标 commit；
 - [ ] Release 页面可打开。
 
-## 7. 本仓库脚本补的四处（首次推送时踩到的）
+## 9. 本仓库脚本补的四处（首次推送时踩到的）
 
 `scripts/push-github-api.mjs` 是上面那份脚本的复用版，首次推送时撞到四个问题，都已修：
 
